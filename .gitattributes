@@ -1,0 +1,37 @@
+# 换行符规则：不依赖每个克隆者自己的 core.autocrlf 设置。
+#
+# Windows 运维脚本必须是 CRLF。cmd.exe 解析纯 LF 的批处理时会把相邻行粘在一起，
+# 实际表现为一堆半截命令：'tle' 不是内部或外部命令（来自 title）、'/d' ...（来自 cd /d），
+# 接着磁盘目录没切换成功，相对路径 runtime\python.exe 也就找不到了。
+# 反过来也不能省：core.autocrlf=true 只在检出时转换，
+# 换台机器用 autocrlf=false 克隆、或在 Linux 上打包，照样会得到 LF 的 .bat。
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# Linux 运维脚本必须是 LF。CRLF 会让 shebang 变成 "#!/usr/bin/env bash\r"，
+# 解释器路径不存在，脚本直接跑不起来。方向刚好和 Windows 相反。
+*.sh   text eol=lf
+
+# 其余文本文件统一 LF，避免跨平台协作时的整文件 diff 噪音。
+*.py   text eol=lf
+*.md   text eol=lf
+*.txt  text eol=lf
+*.html text eol=lf
+*.css  text eol=lf
+*.js   text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.svg  text eol=lf
+*.ini  text eol=lf
+*.cfg  text eol=lf
+
+# 二进制一律不要被换行转换搞坏。
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.db   binary
+*.woff binary
+*.woff2 binary
