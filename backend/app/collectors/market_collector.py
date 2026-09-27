@@ -145,14 +145,22 @@ class MarketCollector(BaseCollector):
         cursor = int(checkpoint.get("cursor_ts") or 0)
 
         begin = datetime.strptime(start_date or self.s.BACKFILL_START_DATE, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        if cursor:
-            # 从断点继续，往前留 1 根重叠，防止边界缺失
-            begin = datetime.fromtimestamp(max(cursor - self.step, begin.timestamp()), tz=timezone.utc)
         end = (
             datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
             if end_date
             else datetime.now(timezone.utc)
         )
+
+        # 断点续传，但只续「落在本次请求窗口内」的断点。
+        #
+        # 无条件用 cursor 抬 begin 会让指定范围的回填直接空转：上一轮全量回填已经
+        # 把游标推到今天，此时再请求 2024 年那段，begin 会被抬到 end 之后，
+        # while 一次都不进，返回 ok=True / rows=0 —— 看着成功，其实什么都没做。
+        # 窗口内续传才是有意义的：唯一目的是跳过「这次请求里已经抓过的部分」。
+        begin_ts, end_ts = int(begin.timestamp()), int(end.timestamp())
+        if cursor and begin_ts < cursor < end_ts:
+            # 从断点继续，往前留 1 根重叠，防止边界缺失
+            begin = datetime.fromtimestamp(max(cursor - self.step, begin_ts), tz=timezone.utc)
 
         total = 0
         uncovered: list[str] = []   # 明确记录「哪些时间窗口所有数据源都没有覆盖」
@@ -164,7 +172,12 @@ class MarketCollector(BaseCollector):
             window = f"{cursor_dt:%Y-%m-%d}~{batch_end:%Y-%m-%d}"
             try:
                 rows = await self._fetch_and_store(
-                    symbol, int(cursor_dt.timestamp()) * 1000, int(batch_end.timestamp()) * 1000
+                    symbol,
+                    int(cursor_dt.timestamp()) * 1000,
+                    int(batch_end.timestamp()) * 1000,
+                    # 把窗口时间传给采集器：参考价要取同一时期的价格，
+                    # 拿今天的价格去校验历史价格会把整批数据判为脏数据。
+                    reference_ts=int(cursor_dt.timestamp()),
                 )
                 total += rows
                 if not rows:
@@ -243,8 +256,14 @@ class MarketCollector(BaseCollector):
         ) and any(a.get("failure_type") == "empty_data" for a in attempts)
 
     # -------------------------------------------------------------- 内部实现
-    async def _fetch_and_store(self, symbol: str, start_ms: int, end_ms: int) -> int:
-        """按时间段抓取并写入，返回写入行数。"""
+    async def _fetch_and_store(
+        self, symbol: str, start_ms: int, end_ms: int, reference_ts: int | None = None
+    ) -> int:
+        """按时间段抓取并写入，返回写入行数。
+
+        :param reference_ts: 这批数据所处的时间（秒）。历史回填必须传，
+                             好让参考价取同一时期的本地价格；不传则用最新价（增量场景）。
+        """
         span_seconds = max(1, (end_ms - start_ms) // 1000)
         limit = min(1500, int(span_seconds // self.step) + 5)
 
@@ -262,7 +281,16 @@ class MarketCollector(BaseCollector):
 
         now = datetime.now(timezone.utc)
         rows = []
-        reference_price = await self._reference_price()
+        reference_price = await self._reference_price(reference_ts)
+        if reference_ts is not None and reference_price is None:
+            # 附近没有任何本地数据可作参照：如实记录，照常写入。
+            # 绝不因为「没有参照」就怀疑这批数据 ——
+            # 全新安装后的首次回填走的正是这条路。
+            logger.event(
+                "collect.no_local_anchor",
+                task=self.task_name,
+                at=datetime.fromtimestamp(reference_ts, tz=timezone.utc).strftime("%Y-%m-%d"),
+            )
         for c in candles:
             ok_price, reason = sanity_check_price(c.close, reference=reference_price)
             if not ok_price:
@@ -303,13 +331,43 @@ class MarketCollector(BaseCollector):
             )
         return written
 
-    async def _reference_price(self) -> float | None:
-        """用于脏数据防护的参考价（本地最近一次可信价格）。"""
+    async def _reference_price(self, near_ts: int | None = None) -> float | None:
+        """用于脏数据防护的参考价。**必须支持按时间去取**。
+
+        以前无条件拿「本地最新价」当参照，历史回填就成了灾难：
+        回填 2024 年那段时，拿今天的 84,436 去比对当年的 44,179，
+        偏差 47% 直接越过 25% 阈值，整批 K 线被当成脏数据丢弃，
+        返回 rows=0 —— 界面显示「写入 0 根」，看起来像数据源没数据，其实是自己拦自己。
+        历史价格本来就和当前价差很远（BTC 一年翻倍是常事），
+        用最新价校验历史价从根上就不成立。
+
+        :param near_ts: 目标时刻（秒）。给了就取其附近的本地 K 线做参照；
+                        不给则退化为最新价 —— 实时 tick 和增量同步本来就该用最新价。
+        :return: 参考价；找不到参照时返回 ``None``。没有参照不等于数据可疑，
+                 调用方此时只做绝对区间（1 ~ 1000 万）校验照常写入。
+        """
         factory = get_session_factory()
         async with factory() as session:
-            stmt = select(MarketPrice).order_by(MarketPrice.observation_time.desc()).limit(1)
-            row = (await session.execute(stmt)).scalars().first()
-            return row.price if row else None
+            if near_ts is None:
+                stmt = select(MarketPrice).order_by(MarketPrice.observation_time.desc()).limit(1)
+                row = (await session.execute(stmt)).scalars().first()
+                return row.price if row else None
+
+            # 取时间上最接近该窗口的本地 K 线（±45 天内），而不是全局最新的那根
+            window = 45 * 86400
+            stmt = (
+                select(Candle.close)
+                .where(
+                    Candle.symbol == "BTC",
+                    Candle.interval == self.interval,
+                    Candle.ts >= near_ts - window,
+                    Candle.ts <= near_ts + window,
+                )
+                .order_by(func.abs(Candle.ts - near_ts))
+                .limit(1)
+            )
+            close = (await session.execute(stmt)).scalar()
+            return float(close) if close else None
 
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
         mode = kwargs.get("mode", "tick")

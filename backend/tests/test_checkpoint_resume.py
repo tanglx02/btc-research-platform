@@ -17,6 +17,7 @@ import pytest
 from sqlalchemy import text
 
 from app.collectors.base import BaseCollector
+from app.collectors.market_collector import MarketCollector
 from app.db.base import dispose_engine, get_session_factory
 from app.db.migrate import init_db
 from app.db.repo import candle_coverage, upsert_candles
@@ -146,6 +147,60 @@ async def test_resume_after_interruption_writes_only_missing_part(tmp_db_path):
     # 中途中断既没有造成重复行，也没有丢数据
     assert count == coverage["count"] == 150
     assert (await collector.get_checkpoint())["total_rows"] == 150
+
+
+@pytest.mark.asyncio
+async def test_explicit_range_is_not_swallowed_by_stale_cursor(tmp_db_path, monkeypatch):
+    """明确的起止范围不能被过期游标吞掉。
+
+    曾经的写法是无条件 ``begin = max(cursor - step, begin)``：上一轮全量回填把游标
+    推到今天之后，再请求「2024 年那段」时 begin 会被抬到 end 之后，while 一次都不进，
+    返回 ``ok=True / rows=0`` —— 界面显示「写入 0 根」，用户以为数据本来就有。
+    """
+    await init_db()
+    collector = MarketCollector(interval="1d")
+    # 模拟上一轮全量回填已经把游标推到现在
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    await collector.save_checkpoint(cursor_ts=now_ts, status="done")
+
+    seen: list[tuple[int, int]] = []
+
+    async def fake_fetch(symbol, start_ms, end_ms, *args, **kwargs):  # noqa: ANN001
+        # *args/**kwargs 不能省：backfill 还会传 reference_ts，
+        # 替身签名收窄了会 TypeError，被 backfill 的 except 吞成 ok=False，
+        # 看起来就像「用例随机失败」。
+        seen.append((start_ms, end_ms))
+        return 7
+
+    monkeypatch.setattr(collector, "_fetch_and_store", fake_fetch)
+
+    result = await collector.backfill(start_date="2024-01-01", end_date="2024-01-10")
+    assert result["ok"] is True, f"回填失败：{result}"
+    assert seen, "指定了明确范围却一次都没抓取：游标把请求窗口吞掉了"
+    assert seen[0][0] == ts_at("2024-01-01") * 1000, "没有从请求的起始日期开始抓"
+    assert result["rows"] == 7
+
+
+@pytest.mark.asyncio
+async def test_cursor_inside_requested_window_still_resumes(tmp_db_path, monkeypatch):
+    """断点落在请求窗口内时，仍然要从断点继续 —— 这才是不重复劳动的那层保护。"""
+    await init_db()
+    collector = MarketCollector(interval="1d")
+    await collector.save_checkpoint(cursor_ts=ts_at("2024-01-05"), status="failed", error="模拟中断")
+
+    seen: list[int] = []
+
+    async def fake_fetch(symbol, start_ms, end_ms, *args, **kwargs):  # noqa: ANN001
+        seen.append(start_ms)
+        return 3
+
+    monkeypatch.setattr(collector, "_fetch_and_store", fake_fetch)
+
+    result = await collector.backfill(start_date="2024-01-01", end_date="2024-01-10")
+    assert result["ok"] is True, f"回填失败：{result}"
+    assert seen, "窗口内居然也没抓取"
+    # 断点在窗口内：从断点往前留 1 根重叠开始，而不是从 2024-01-01 推倒重来
+    assert seen[0] == (ts_at("2024-01-05") - 86400) * 1000
 
 
 @pytest.mark.asyncio

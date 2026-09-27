@@ -506,16 +506,25 @@
         const box = document.getElementById('bf-result');
         box.innerHTML = `<div class="loading"><span class="spin"></span> 正在回填历史数据，请稍候…</div>`;
         try {
-          const r = await post('/system/backfill', null, {
+          // 注意：post 的签名是 post(path, body, params)，请求体是**第二个**参数。
+          // 之前这里写成 post('/system/backfill', null, {...})，请求体被塞进了第三个
+          // 参数（那是拼到 URL 上的 query），真正发出的 body 是 JSON.stringify(null)
+          // 也就是字符串 "null"，后端解析 BackfillRequest 失败 → HTTP 422。
+          const r = await post('/system/backfill', {
             interval: document.getElementById('bf-interval').value,
-            start_date: document.getElementById('bf-start').value,
-            end_date: document.getElementById('bf-end').value,
+            // 日期框留空时 value 是 ''，这里显式归一成 null：
+            // 靠后端把 '' 当 None 也能跑，但那层宽容不该由 UI 依赖。
+            start_date: document.getElementById('bf-start').value || null,
+            end_date: document.getElementById('bf-end').value || null,
           });
           box.innerHTML = `<div class="note ${r.ok ? 'note-ok' : 'note-warn'}">
             写入 ${nf0(r.rows || 0)} 根${r.stopped_at ? '，中断于 ' + esc(r.stopped_at) : ''}
             ${(r.uncovered_windows || []).length ? '<br>以下窗口所有数据源均无数据（未用假数据填补）：' + esc(r.uncovered_windows.join('、')) : ''}
             </div>` + rawBlock('回填原始返回', r);
-        } catch (e) { box.innerHTML = unavailable(String(e.message || e)); }
+        } catch (e) {
+          // 这里是「动作失败」，不是「模块不可用」，别套 unavailable() 那套说法
+          box.innerHTML = note('warn', '<b>回填未执行</b><br>' + esc(String(e.message || e)));
+        }
       };
     });
     return html;

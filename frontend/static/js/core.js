@@ -49,6 +49,16 @@
   }
 
   async function post(path, body, params) {
+    // 第二个参数才是请求体。曾经有地方写成 post(path, null, {...payload})，把请求体塞进了
+    // 第三个参数（那是拼到 URL 上的 query），真正发出去的 body 是 JSON.stringify(null)
+    // 也就是字符串 "null"，后端解析模型失败直接 422，界面只剩一句干巴巴的
+    // 「请求失败 HTTP 422」，很难看出写错的是参数位置。这里直接把它挡成抛错 ——
+    // 宁可当场炸出来，也不要悄悄退化成一次空请求。
+    if ((body === null || body === undefined) && params && Object.keys(params).length) {
+      throw new Error(
+        'post() 调用写错了：请求体必须放在第二个参数，签名是 post(path, body, params)'
+      );
+    }
     const qs = params ? '?' + new URLSearchParams(
       Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '')
     ).toString() : '';
@@ -88,7 +98,21 @@
     let data;
     try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { raw: text }; }
     if (!res.ok) {
-      const msg = (data && data.error && data.error.message) || ('请求失败 HTTP ' + res.status);
+      // 后端业务异常统一是 {error:{message}}；但框架层的校验错误（典型就是 HTTP 422
+      // 参数不合法）走的是 FastAPI 标准的 {detail: [...]}。不读 detail 的话，
+      // 用户只能看到「请求失败 HTTP 422」，完全不知道是哪个字段不对。
+      const detail = data && data.detail;
+      const detailText = typeof detail === 'string'
+        ? detail
+        : Array.isArray(detail)
+          ? detail.map(d => {
+            const loc = (d.loc || []).slice(1).join('.');
+            return (loc ? loc + '：' : '') + (d.msg || d.type || '');
+          }).join('；')
+          : (detail ? JSON.stringify(detail) : '');
+      const msg = (data && data.error && data.error.message)
+        || detailText
+        || ('请求失败 HTTP ' + res.status);
       throw new Error(msg);
     }
     return data;

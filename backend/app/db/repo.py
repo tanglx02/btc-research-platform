@@ -195,18 +195,40 @@ async def latest_candles(
     limit: int = 500,
     before_ts: int | None = None,
 ) -> list[dict[str, Any]]:
-    """读取本地历史 K 线 —— 查看历史优先读自己的数据库，不依赖第三方。"""
+    """读取本地历史 K 线 —— 查看历史优先读自己的数据库，不依赖第三方。
+
+    同一个时间点可能存着多个数据源的副本：主键是 (symbol, interval, ts, source_id)，
+    而主源会因 failover 切换，于是同一次回填的不同批次可能来自不同 Provider。
+    多源副本要留着做交叉验证，但**读出来给分析和画图时必须按 ts 去重**，
+    否则同一天出现两根 K 线 —— 图表出现重复横坐标，指标（SMA/RSI/MACD）
+    变成在重复序列上计算，结果全是错的。
+
+    去重规则：同一 ts 取 `fetch_time` 最新的那根（数据最新），同值再按 source_id
+    兜一个稳定顺序，保证同一份数据每次读出来完全一致（可复现）。
+    """
+    # 多拉几倍再裁：因为有副本时，limit 根里实际只有 limit/副本数 个时间点
+    fanout = 4
     stmt = (
         select(Candle)
         .where(Candle.symbol == symbol, Candle.interval == interval)
         .order_by(Candle.ts.desc())
-        .limit(limit)
+        .limit(limit * fanout)
     )
     if before_ts:
         stmt = stmt.where(Candle.ts <= before_ts)
     result = await session.execute(stmt)
     rows = list(result.scalars())
-    rows.reverse()
+
+    picked: dict[int, Candle] = {}
+    for c in rows:
+        current = picked.get(c.ts)
+        if current is None:
+            picked[c.ts] = c
+            continue
+        if _newer_candle(c, current):
+            picked[c.ts] = c
+
+    ranked = sorted(picked.values(), key=lambda c: c.ts)[-limit:]
     return [
         {
             "ts": c.ts,
@@ -218,14 +240,29 @@ async def latest_candles(
             "provider": c.source_id,
             "quality_status": c.quality_status,
         }
-        for c in rows
+        for c in ranked
     ]
 
 
+def _newer_candle(candidate: Candle, current: Candle) -> bool:
+    """同一时间点两根 K 线谁更新：fetch_time 优先，其次 source_id 兜稳定顺序。"""
+    candidate_fetch = candidate.fetch_time or datetime.min
+    current_fetch = current.fetch_time or datetime.min
+    if candidate_fetch != current_fetch:
+        return candidate_fetch > current_fetch
+    return (candidate.source_id or "") < (current.source_id or "")
+
+
 async def candle_coverage(session: AsyncSession, symbol: str = "BTC", interval: str = "1d") -> dict[str, Any]:
-    """本地历史覆盖范围与缺口统计。"""
+    """本地历史覆盖范围与缺口统计。
+
+    `count` 用 COUNT(DISTINCT ts) 而不是 COUNT(*)：多源会为同一时间点存多个副本，
+    按行数统计会让覆盖率虚高一倍，缺口检测也会跟着算错。
+    """
     stmt = select(
-        func.min(Candle.ts), func.max(Candle.ts), func.count(Candle.id)
+        func.min(Candle.ts),
+        func.max(Candle.ts),
+        func.count(func.distinct(Candle.ts)),
     ).where(Candle.symbol == symbol, Candle.interval == interval)
     result = await session.execute(stmt)
     min_ts, max_ts, count = result.first() or (None, None, 0)
