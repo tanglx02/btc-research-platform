@@ -1,0 +1,56 @@
+# BTC 全市场智能研究平台 —— systemd 服务单元
+#
+# 安装步骤（Ubuntu / Debian / CentOS / Rocky 通用）：
+#   1. 编辑下方 %I / WorkingDirectory 中的路径为你的实际部署目录
+#   2. sudo cp btc-platform.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable --now btc-platform
+#   5. sudo systemctl status btc-platform
+#
+# 说明：
+#   * 采用 simple 类型 + uvicorn 单进程；如需多 worker，把 ExecStart 改成 --workers 4
+#     （注意：多 worker 时调度器会各跑一份，建议保留 workers=1，或设置 SCHEDULER_ENABLED=false
+#       并另起一个专门的采集 worker）
+#   * Restart=always + RestartSec=5：进程崩溃/端口冲突都会自动拉起，符合「长期守护运行」
+#   * ProtectSystem=strict 会禁止写入系统目录，ReadWritePaths 显式放开本平台需要写的目录
+
+[Unit]
+Description=BTC Intelligence Platform (FastAPI)
+Documentation=https://example.local/docs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=btc
+Group=btc
+# ---- 修改为你的实际安装路径 ----
+WorkingDirectory=/opt/btc-platform
+Environment="PATH=/opt/btc-platform/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONIOENCODING=utf-8"
+EnvironmentFile=-/opt/btc-platform/.env
+ExecStart=/opt/btc-platform/.venv/bin/python -m uvicorn app.main:app \
+          --host 127.0.0.1 \
+          --port 8787 \
+          --app-dir /opt/btc-platform/backend
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+StandardOutput=append:/var/log/btc-platform/stdout.log
+StandardError=append:/var/log/btc-platform/stderr.log
+
+# ---- 安全加固（最小权限）----
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/opt/btc-platform/data /opt/btc-platform/logs /opt/btc-platform/backups
+
+[Install]
+WantedBy=multi-user.target

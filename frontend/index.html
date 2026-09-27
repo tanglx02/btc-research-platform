@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BTC 全市场智能研究平台</title>
+<link rel="stylesheet" href="/static/css/app.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>₿</text></svg>" />
+</head>
+<body>
+<div id="app">
+  <!-- 顶部栏 -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">₿</span>
+      <span class="brand-text">
+        <strong>BTC 研究平台</strong>
+        <em>多源 · 可追溯 · 不编造</em>
+      </span>
+    </div>
+    <div class="topbar-status" id="topbar-status">
+      <span class="dot dot-unknown" title="数据状态"></span>
+      <span class="price-mini" id="price-mini">--</span>
+      <span class="src-mini" id="src-mini">加载中</span>
+    </div>
+    <div class="topbar-actions">
+      <div class="mode-switch" title="普通模式通俗化展示；专业模式展示原始数据与计算过程">
+        <button class="mode-btn active" data-mode="simple">普通模式</button>
+        <button class="mode-btn" data-mode="pro">专业模式</button>
+      </div>
+      <button class="icon-btn" id="btn-refresh" title="刷新当前页面数据">⟳</button>
+    </div>
+  </header>
+
+  <!-- 主体 -->
+  <div class="shell">
+    <nav class="sidebar" id="sidebar"></nav>
+    <main class="content" id="content">
+      <div class="loading">正在加载数据…</div>
+    </main>
+  </div>
+
+  <footer class="footer">
+    <span id="footer-info">所有结论均可展开到原始数据</span>
+    <span class="sep">·</span>
+    <span class="muted">历史数据优先读取本地数据库；第三方接口全部不可用时会显示降级状态，绝不生成假数据</span>
+  </footer>
+</div>
+
+<script src="/static/vendor/echarts.min.js"></script>
+<script src="/static/js/core.js"></script>
+<script src="/static/js/charts.js"></script>
+<script src="/static/js/pages-market.js"></script>
+<script src="/static/js/pages-analysis.js"></script>
+<script src="/static/js/pages-research.js"></script>
+<script src="/static/js/pages-portfolio.js"></script>
+<script src="/static/js/pages-system.js"></script>
+<script src="/static/js/pages-alerts.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

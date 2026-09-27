@@ -1,0 +1,38 @@
+# BTC 全市场智能研究平台 —— 后端依赖
+# 说明：本平台**零构建前端**（原生 HTML/JS + 本地化 ECharts），因此不需要 Node/npm，
+#       Node 只在可选的前端语法检查时才用到。
+# 安装：pip install -r requirements.txt
+# 国内加速：pip install -r requirements.txt -i https://mirrors.cloud.tencent.com/pypi/simple
+
+# ---- Web 框架与运行时
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-dotenv>=1.0.1
+PyYAML>=6.0.2
+
+# ---- 数据校验与配置
+pydantic>=2.9.2
+pydantic-settings>=2.6.1
+
+# ---- 数据库（SQLite 开箱即用；PostgreSQL 走 psycopg 驱动，可叠加 TimescaleDB）
+# SQLAlchemy asyncio 目标：会一并安装 aiosqlite 所需的 greenlet，否则
+# `from sqlalchemy.ext.asyncio import ...` 会直接报 ImportError。
+SQLAlchemy[asyncio]>=2.0.36
+# SQLite 异步驱动：开箱即用，无需额外安装数据库
+aiosqlite>=0.20.0
+psycopg[binary]>=3.2.3   # PostgreSQL + TimescaleDB（可选，生产推荐）
+
+# ---- 网络访问（支持 HTTP/HTTPS/SOCKS5 代理，国内网络环境必需）
+httpx>=0.28.0
+httpx-socks>=0.9.0       # SOCKS5 代理支持
+
+# ---- 计算
+numpy>=2.1.3
+pandas>=2.2.3
+
+# ---- 任务调度
+APScheduler>=3.10.4
+
+# ---- 测试（可选，生产可去掉）
+pytest>=8.3.4
+pytest-asyncio>=0.24.0
