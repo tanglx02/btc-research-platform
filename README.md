@@ -12,6 +12,9 @@
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-412%20passed-brightgreen.svg)](#测试)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey.svg)](#快速开始)
+[![Release](https://img.shields.io/github/v/release/tanglx02/btc-research-platform?label=Windows%20%E4%BE%BF%E6%90%BA%E7%89%88&color=blue)](https://github.com/tanglx02/btc-research-platform/releases/latest)
+
+**Windows 一键便携版（含 Python 运行时，解压即跑）：** [👉 Releases 下载](https://github.com/tanglx02/btc-research-platform/releases/latest)
 
 </div>
 
