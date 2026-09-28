@@ -45,8 +45,13 @@ class Settings(BaseSettings):
     ADMIN_TOKEN: str = "admin-change-me"
 
     # ---------------- 存储 ----------------
-    # 默认 SQLite（Windows/Linux 零依赖一键启动）；生产可切换 PostgreSQL(+TimescaleDB)
+    # 数据库由「首次启动安装向导」选定并写入本文件，支持 SQLite / PostgreSQL / MySQL。
+    # 想让多台设备看到同一份数据，就选 PostgreSQL 或 MySQL —— SQLite 是本机文件，
+    # 放在几台机器上就是几份互不相干的库。
     DATABASE_URL: str = "sqlite+aiosqlite:///data/btc.db"
+    # True 表示已经走过安装向导。首次启动为 False，此时 Web 会先进引导页；
+    # 老版本升级上来的部署会由 `core.setup` 依据「库里已有本平台的表」自动置真。
+    SETUP_COMPLETED: bool = False
     DB_POOL_SIZE: int = 10
     DB_MAX_OVERFLOW: int = 20
     DB_ECHO: bool = False

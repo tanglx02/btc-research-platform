@@ -14,13 +14,17 @@ PyYAML>=6.0.2
 pydantic>=2.9.2
 pydantic-settings>=2.6.1
 
-# ---- 数据库（SQLite 开箱即用；PostgreSQL 走 psycopg 驱动，可叠加 TimescaleDB）
+# ---- 数据库（SQLite 开箱即用；PostgreSQL / MySQL 可选，用于多台设备共享同一份数据）
 # SQLAlchemy asyncio 目标：会一并安装 aiosqlite 所需的 greenlet，否则
 # `from sqlalchemy.ext.asyncio import ...` 会直接报 ImportError。
 SQLAlchemy[asyncio]>=2.0.36
 # SQLite 异步驱动：开箱即用，无需额外安装数据库
 aiosqlite>=0.20.0
-psycopg[binary]>=3.2.3   # PostgreSQL + TimescaleDB（可选，生产推荐）
+# PostgreSQL 异步驱动。注意必须是 asyncpg —— SQLAlchemy 的 asyncio 引擎用不了
+# psycopg（同步驱动），早期版本这里写成了 psycopg，导致「配完 PostgreSQL 一查就崩」。
+asyncpg>=0.30.0
+# MySQL / MariaDB 异步驱动（不需要 MySQL 可以不装）
+aiomysql>=0.2.0
 
 # ---- 网络访问（支持 HTTP/HTTPS/SOCKS5 代理，国内网络环境必需）
 httpx>=0.28.0

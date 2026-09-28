@@ -3,15 +3,16 @@
 
 启动流程：
 1. 集中配置校验（缺失即快速失败）
-2. 初始化数据库（幂等）+ 种子数据
-3. 自动发现并注册所有 Provider
-4. 启动采集调度器（可选）
-5. 挂载静态前端与 API 路由
+2. **首次启动**：未完成安装引导时不建库、不起调度，
+   `/api/v1/**` 除 `/system/setup/*` 外全部返回 503，前端自动进入引导页
+3. 初始化数据库（幂等）+ 种子数据
+4. 自动发现并注册所有 Provider
+5. 启动采集调度器（可选）
+6. 挂载静态前端与 API 路由
 """
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,35 +23,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import alerts, assistant, market, portfolio, research, system
+from .api import alerts, assistant, market, portfolio, research, setup as setup_api, system
+from .core.bootstrap import has_started, run_startup_tasks, shutdown_tasks
 from .core.config import Settings, get_settings
 from .core.errors import AppError
 from .core.logging import get_logger, setup_logging
-from .db.migrate import enable_timescaledb, init_db
-from .db.seed import seed_all
+from .core.setup import ensure_adopted_existing_install, needs_setup
 from .providers.registry import get_registry
-from .providers.router import get_router
-
-async def _bootstrap_first_price() -> None:
-    """后台采集一次最新价格。
-
-    关键点：这是**装饰性预热**，不是系统可用性的前置条件。
-    即使所有 Provider 都不可达，也必须让 API 立刻可用 —— 页面会走本地缓存/降级逻辑，
-    而不是让整个服务卡在启动阶段。
-    """
-    await asyncio.sleep(1.0)
-    try:
-        router = get_router()
-        from .providers.types import DataCategory
-
-        result = await asyncio.wait_for(
-            router.fetch_validated(DataCategory.MARKET_PRICE), timeout=30
-        )
-        logger.event("app.first_price", price=result.data, provider=result.provider)
-    except asyncio.TimeoutError:
-        logger.event("app.first_price_timeout")
-    except Exception as exc:  # noqa: BLE001 - 预热失败不影响启动
-        logger.event("app.first_price_failed", error=str(exc)[:200])
 
 
 logger = get_logger(__name__)
@@ -65,61 +44,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.event("app.starting", env=s.APP_ENV, version="1.0.0")
 
-        # 1) 数据库
-        await init_db()
-        await enable_timescaledb()
-        counts = await seed_all()
-        logger.event("app.seed", **counts)
+        # 0) 安装引导未完成：除了引导接口，其它一切都不启动。
+        #    理由很简单 —— 这时候数据库还没定，任何试图建表/读取的动作都注定失败，
+        #    不如干脆不启动，让前端把人带去引导页。
+        if needs_setup(s):
+            try:
+                adopted = await ensure_adopted_existing_install(s)
+            except Exception as exc:  # noqa: BLE001 - 兼容判定失败时必须按「未安装」走
+                logger.warning("app.adopt_failed error=%s", exc)
+                adopted = False
+            if adopted:
+                logger.event("app.setup_adopted", hint="检测到已有数据库，自动标记为已安装")
+            else:
+                logger.event("app.awaiting_setup", hint="等待安装向导完成数据库配置")
+                yield
+                logger.event("app.stopped", reason="安装引导未完成，未初始化任何服务")
+                return
 
-        # 2) 运行时配置（后台改过的配置优先于 .env）—— 必须在 Provider 注册之前，
-        #    否则数据源会先按 .env 判定「未配置」，后台填的密钥要等下次才生效。
-        try:
-            from .core.settings_store import get_settings_store
-
-            await get_settings_store().load(force=True)
-            logger.event("app.settings_loaded")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("app.settings_load_failed error=%s，回退到 .env 与默认值", exc)
-
-        # 3) Provider 注册
-        registry = get_registry()
-        provider_count = registry.autodiscover() if not registry.all() else len(registry.all())
-        logger.event("app.providers_registered", count=provider_count)
-
-        # 3.5) 恢复「数据源独立代理」（数据库里的真实地址），必须在注册之后、采集之前
-        try:
-            from .services.health_service import HealthService
-
-            restored = await HealthService().restore_proxy_overrides()
-            if restored:
-                logger.event("app.provider_proxy_restored", count=len(restored), providers=restored)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("app.provider_proxy_restore_failed error=%s", exc)
-
-        # 4) 首次启动时做一次基础采集（后台进行，绝不阻塞服务可用）
-        if s.APP_ENV != "test":
-            asyncio.create_task(_bootstrap_first_price(), name="bootstrap-first-price")
-
-        # 5) 调度器
-        if s.SCHEDULER_ENABLED and s.APP_ENV != "test":
-            from .scheduler.manager import get_scheduler
-
-            get_scheduler().start()
+        await run_startup_tasks(s)
 
         yield
 
         # 关闭
-        if s.SCHEDULER_ENABLED:
-            try:
-                from .scheduler.manager import get_scheduler
-
-                get_scheduler().stop()
-            except Exception:  # noqa: BLE001
-                pass
-        try:
-            await registry.close_all()
-        except Exception:  # noqa: BLE001
-            pass
+        if has_started():
+            await shutdown_tasks(s)
         logger.event("app.stopped")
 
     app = FastAPI(
@@ -143,6 +91,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-Admin-Token"],
     )
 
+    # ---------------- 安装闸门
+    # 未完成安装引导时，只放行引导接口本身。少了这道闸门的话，
+    # 前端会在没有数据库的情况下反复请求各业务接口，得到一堆与真因无关的报错。
+    prefix = s.API_PREFIX
+    setup_prefix = prefix + "/system/setup"
+
+    @app.middleware("http")
+    async def setup_gate(request: Request, call_next):
+        if request.url.path.startswith(prefix + "/") and not request.url.path.startswith(setup_prefix):
+            if needs_setup(get_settings()):
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": {
+                            "code": "setup_required",
+                            "message": "尚未完成安装引导：请先选择数据库并通过连接自检。",
+                            "detail": {"setup_endpoint": setup_prefix + "/status"},
+                        }
+                    },
+                )
+        return await call_next(request)
+
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
         response = await call_next(request)
@@ -165,8 +135,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             content={"error": {"code": "internal_error", "message": "服务器内部错误", "detail": {}}},
         )
 
-    # ---------------- 路由
-    prefix = s.API_PREFIX
+    app.include_router(setup_api.router, prefix=prefix + "/system", tags=["安装引导"])
     app.include_router(system.router, prefix=prefix + "/system", tags=["系统/数据源中心"])
     app.include_router(market.router, prefix=prefix + "/market", tags=["行情与分析"])
     app.include_router(research.router, prefix=prefix + "/research", tags=["回测/回放/模型"])

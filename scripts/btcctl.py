@@ -351,6 +351,39 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_db_test(args: argparse.Namespace) -> int:
+    """自检当前（或指定）数据库连接串 —— 与 Web 安装引导用的是同一套检查。"""
+    from app.core.setup import probe_database
+
+    url = args.url or os.environ.get("DATABASE_URL", "")
+    if not url:
+        _fail("没有给出连接串：加 --url，或先设置 DATABASE_URL")
+        return 2
+    r = await probe_database(url, timeout=args.timeout)
+    _info(f"连接串（已隐藏口令）：{r.get('masked_url') or url}")
+    for c in r["checks"]:
+        (print if c["ok"] else _warn)(f"  [{'通过' if c['ok'] else '失败'}] {c['name']}：{c['detail']}")
+    if r["ok"]:
+        _ok(r["summary"])
+        return 0
+    _fail(r["summary"])
+    return 1
+
+
+def cmd_setup_reset(_args: argparse.Namespace) -> int:
+    """把系统改回「未安装」状态，下次打开 Web 会重新进入安装引导。
+
+    典型场景：想把数据从本机 SQLite 迁到一台共享的 PostgreSQL 上。
+    这里只改标记，不动任何数据 —— 旧库文件原样留着，随时可以切回去。
+    """
+    from app.core.setup import ENV_PATH, upsert_env_vars
+
+    upsert_env_vars({"SETUP_COMPLETED": "false"})
+    _ok("已重置为未安装状态，下次打开网页会重新进入安装引导。")
+    _warn(f"配置文件位置：{ENV_PATH}（数据不会因为这个操作丢失）")
+    return 0
+
+
 # --------------------------------------------------------------------- 入口
 
 
@@ -381,6 +414,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--interval", default="1d")
     add("health", help="数据源健康面板")
     add("probe", help="一键测试所有数据源连通性")
+    s = add("db-test", help="数据库连接自检（同 Web 安装引导）")
+    s.add_argument("--url", default="", help="连接串；留空则用当前 DATABASE_URL")
+    s.add_argument("--timeout", type=float, default=8.0)
+    add("setup-reset", help="恢复为未安装状态，下次打开 Web 重进安装引导")
     s = add("replay", help="历史回放")
     s.add_argument("--date", required=True)
     s.add_argument("--perspective", default="then", choices=["then", "aftermath"])
@@ -417,6 +454,7 @@ ASYNC_COMMANDS = {
     "coverage": cmd_coverage,
     "health": cmd_health,
     "probe": cmd_probe,
+    "db-test": cmd_db_test,
     "replay": cmd_replay,
     "backtest": cmd_backtest,
 }
@@ -434,6 +472,8 @@ def main() -> int:
             return cmd_restore(args)
         if args.command == "serve":
             return cmd_serve(args)
+        if args.command == "setup-reset":
+            return cmd_setup_reset(args)
     except KeyboardInterrupt:
         print("\n  已中断。断点已保存，重新执行同一命令可继续。")
         return 130

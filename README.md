@@ -8,9 +8,9 @@
 
 [![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![SQLite](https://img.shields.io/badge/SQLite-aiosqlite-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/)
+[![Database](https://img.shields.io/badge/DB-SQLite%20%7C%20PostgreSQL%20%7C%20MySQL-003B57?logo=postgresql&logoColor=white)](#多数据库支持)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-275%20passed-brightgreen.svg)](#测试)
+[![Tests](https://img.shields.io/badge/tests-412%20passed-brightgreen.svg)](#测试)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey.svg)](#快速开始)
 
 </div>
@@ -40,7 +40,7 @@
 |---|---|
 | Python | **3.11+**（项目在 3.13 上开发与验证） |
 | 操作系统 | Windows 10/11、Linux |
-| 数据库 | SQLite 开箱即用；生产可选 PostgreSQL + TimescaleDB |
+| 数据库 | **SQLite / PostgreSQL / MySQL 三选一**，首启在网页上选 |
 | Node | **不需要**。前端零构建，原生 JS + ECharts |
 
 ### 三步跑起来
@@ -51,15 +51,24 @@ python -m venv .venv
 .venv/Scripts/activate          # Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
 # 国内加速：pip install -r requirements.txt -i https://mirrors.cloud.tencent.com/pypi/simple
+# 想用 PostgreSQL / MySQL 时再装对应异步驱动：
+#   pip install asyncpg          # PostgreSQL
+#   pip install aiomysql         # MySQL
 
-# 2. 初始化数据库（建表 + 写入种子数据）
-python scripts/btcctl.py init-db
-
-# 3. 启动
+# 2. 启动（首次启动会自动进入安装引导）
 python scripts/btcctl.py serve --host 127.0.0.1 --port 8000
 ```
 
-打开 **http://127.0.0.1:8000** 即可。接口文档在 `/docs`。
+打开 **http://127.0.0.1:8000** —— **首次访问会进入安装引导页**：
+
+1. 选数据库类型（SQLite / PostgreSQL / MySQL）
+2. 填连接参数
+3. 点「测试连接」做 5 项自检，**全部通过才能保存并继续**
+
+自检通过后平台自动建表、写种子数据、注册数据源并启动调度器。接口文档在 `/docs`。
+
+> 已经跑过老版本（`.env` 里没有 `SETUP_COMPLETED`）也不用重装：
+> 平台检测到库里已有 ≥5 张本平台表，会**自动接管**现有部署并补写 `SETUP_COMPLETED=true`。
 
 ### 一键脚本（推荐用于长期部署）
 
@@ -100,6 +109,20 @@ python scripts/btcctl.py collect-all             # 链上/衍生品/情绪/宏�
 全部 56 项配置都能在后台改，保存后立即生效，**无需编辑 `.env`、无需重启**。密钥类配置只显示掩码。
 
 ![系统设置](docs/assets/screenshots/03-系统设置.png)
+
+### 安装引导：选数据库
+
+首次启动的引导页。选完数据库类型填参数，点「测试连接」会由**服务端**做 5 项自检（连接串格式 → 异步驱动 → 建立连接取版本 → 已有表对比 → 建删临时表验读写权限），
+任意一项不通过都会给出可读的排查建议，**并且不会把错误的连接串写进 `.env`**。
+
+![安装引导选数据库](docs/assets/screenshots/20-安装引导选数据库.png)
+
+### 网络代理设置（浏览器式）
+
+和浏览器代理面板一样的用法：先选协议（`socks5` / `socks4` / `http` / `https`），再填主机、端口、可选的用户名与密码，下方实时预览拼好的地址（口令自动掩码）。
+点「测试代理连通性」的请求**由服务端发起**，结果里会回显发起方的主机名、进程 PID、内网 IP，可据此确认不是浏览器在测。
+
+![网络代理设置](docs/assets/screenshots/21-网络代理设置.png)
 
 ### 市场周期
 
@@ -156,7 +179,7 @@ python scripts/btcctl.py collect-all             # 链上/衍生品/情绪/宏�
       ↓
 引擎层    指标 / 周期 / 估值 / 风险 / Regime / 预测 / 回测 / 回放 / 预警
       ↓
-交付层    FastAPI（79 个接口）+ SPA 前端（35 个页面）+ CLI（19 个子命令）
+交付层    FastAPI（83 个接口）+ SPA 前端（36 个页面）+ CLI（18 个子命令）
 ```
 
 ### 项目结构
@@ -180,16 +203,48 @@ btc数据监测网站/
 │   │   ├── engines/           # 指标/周期/估值/风险/Regime/预测
 │   │   ├── services/          # 行情/回测/回放/策略/资金计划/健康
 │   │   └── alerts/            # 智能监测、规则求值、通知渠道
-│   └── tests/                 # 275 个用例，16 个测试文件
+│   └── tests/                 # 412 个用例，20 个测试文件
 ├── frontend/                  # SPA 前端（原生 JS，零构建）
 │   └── static/{css,js,vendor}
 ├── scripts/
-│   ├── btcctl.py              # 主运维 CLI（19 个子命令）
+│   ├── btcctl.py              # 主运维 CLI（18 个子命令）
 │   ├── windows/  linux/       # 双平台一键脚本
 │   └── *_drill.py             # 演练脚本（数据源/代理/备份/预警）
 ├── docs/                      # 36 份设计文档
 └── requirements.txt
 ```
+
+---
+
+## 多数据库支持
+
+数据不再被 SQLite 绑死。SQLite 适合单机，PostgreSQL / MySQL 适合**多台设备共用同一个库、数据保持一致**。
+
+| 方言 | 异步驱动 | 适用场景 | 连接串示例 |
+|---|---|---|---|
+| **SQLite** | `aiosqlite`（内置） | 单机、零依赖、便携版 | `sqlite+aiosqlite:///data/btc.db` |
+| **PostgreSQL** | `asyncpg` | 多人/多机共享、生产环境；可叠加 TimescaleDB | `postgresql+asyncpg://btc:口令@10.0.0.5:5432/btc` |
+| **MySQL** | `aiomysql` | 已有 MySQL 运维体系的团队 | `mysql+aiomysql://btc:口令@10.0.0.5:3306/btc` |
+
+首启在网页引导页里选，也可以随时用命令行验证连接：
+
+```bash
+python scripts/btcctl.py db-test --url "postgresql+asyncpg://btc:口令@10.0.0.5:5432/btc"
+python scripts/btcctl.py setup-reset          # 重置安装状态，重新走一遍引导
+```
+
+**跨方言差异全部收敛在两个模块里**（新增方言只需改这两处）：
+
+| 模块 | 职责 |
+|---|---|
+| `backend/app/db/dialects.py` | URL 归一化、异步驱动强制、驱动是否安装、可读报错、口令 URL 编码、掩码 |
+| `backend/app/db/upsert.py` | SQLite/PG 走 `ON CONFLICT … DO UPDATE`，MySQL 走 `ON DUPLICATE KEY UPDATE`；`DO NOTHING` 在 MySQL 上退化为 `INSERT IGNORE` |
+
+> **一个容易踩的坑**：`postgresql+psycopg://` 里的 psycopg 是**同步**驱动，装到 asyncio 引擎上第一次查询就崩。
+> 平台在 `dialects.normalize_to_async()` 里统一纠正为异步驱动，即使你填了同步串也会被自动改对。
+>
+> 45 张表的 DDL 在三种方言下均通过 `CreateTable(...).compile()` 校验（含 MySQL 的「TEXT/JSON 不能有 DEFAULT」「VARCHAR 必须给长度」约束），
+> 由 `backend/tests/test_db_dialects.py` 守住。
 
 ---
 
@@ -211,8 +266,11 @@ btc数据监测网站/
 
 | 能力 | 说明 |
 |---|---|
-| **SOCKS5 / HTTP 代理** | 全局代理 + 单源独立代理，改完立即生效（连接池自动重建） |
+| **SOCKS5 / HTTP(S) 代理** | 全局代理 + 单源独立代理，改完立即生效（连接池自动重建）。后台按浏览器样式提供 `socks5 / socks4 / http / https` 协议下拉 + 主机/端口/用户名/密码输入框 |
 | **DoH 解析** | 绕开本地 DNS 污染；支持 JSON 与二进制报文两种协议方言，自动降级 |
+
+代理连通性测试**由服务端发起**（`POST /api/v1/system/proxy/test`），响应里回显发起方的主机名、进程 PID、内网 IP 与请求方 IP，
+可以直接验证「到底是服务器在测还是浏览器在测」—— 浏览器自己挂的代理不会影响这个结果。
 
 > **实测数据**：阿里公共 DNS 只认 RFC 8484 二进制报文（`?dns=<base64url>`），问 JSON 形式会返回
 > `400 no 'dns' query parameter found`；而它又是国内少数稳定可达的 DoH 端点。
@@ -270,14 +328,14 @@ pytest backend/tests/test_checkpoint_resume.py -v
 ## 测试
 
 ```bash
-pytest -q                        # 全量：275 passed
+pytest -q                        # 全量：412 passed
 pytest backend/tests/test_dns.py -v      # 61 个用例：DoH 编解码 / 污染判定 / Host+SNI 保留
 pytest backend/tests/test_proxy.py -v    # 31 个用例：代理归一化 / 密码掩码 / 真实 SOCKS5 穿透
 pytest backend/tests/test_api_contract.py -v
 ```
 
 ```
-275 passed, 0 failed, 0 error
+412 passed, 0 failed, 0 error
 ```
 
 测试设计上刻意规避了两类不可靠因素：
@@ -296,7 +354,7 @@ pytest backend/tests/test_api_contract.py -v
 | 层 | 选型 | 理由 |
 |---|---|---|
 | Web | FastAPI + uvicorn | 原生 async，自动生成 OpenAPI 文档 |
-| ORM | SQLAlchemy 2.0 async + aiosqlite | 数据库可平滑切到 PostgreSQL |
+| ORM | SQLAlchemy 2.0 async + aiosqlite / asyncpg / aiomysql | 三种方言共用一套模型，差异收敛在 `db/dialects.py` + `db/upsert.py` |
 | HTTP | httpx + httpx-socks | 原生支持 SOCKS5 代理，async 友好 |
 | 调度 | APScheduler | 进程内 15 个定时任务 |
 | 计算 | numpy / pandas | 指标与回测 |
@@ -306,7 +364,7 @@ pytest backend/tests/test_api_contract.py -v
 
 ## 文档
 
-`docs/` 下有 **36 份**设计文档，覆盖从架构选型到故障排查的完整链路：
+`docs/` 下有 **37 份**设计文档，覆盖从架构选型到故障排查的完整链路：
 
 | 类别 | 文档 |
 |---|---|
@@ -316,7 +374,7 @@ pytest backend/tests/test_api_contract.py -v
 | 引擎 | [13 指标口径](docs/13-指标计算口径.md) · [14 周期与估值](docs/14-周期识别与估值模型.md) · [21 预测口径](docs/21-预测口径与不确定性表达.md) |
 | 准确性 | [17 回测验证](docs/17-策略回测与准确性验证.md) · [18 **防未来数据泄漏**](docs/18-防未来数据泄漏规范.md) |
 | 预警 | [31 智能监测](docs/31-智能监测与条件预警.md) · [33 规则回测](docs/33-预警规则回测与防未来泄漏.md) |
-| 运维 | [24 部署手册](docs/24-安装部署手册.md) · [26 故障排查](docs/26-故障排查手册.md) · [30 运维命令](docs/30-运维命令参考.md) · [36 代理与DNS](docs/36-网络策略代理与DNS解析.md) |
+| 运维 | [24 部署手册](docs/24-安装部署手册.md) · [26 故障排查](docs/26-故障排查手册.md) · [30 运维命令](docs/30-运维命令参考.md) · [36 代理与DNS](docs/36-网络策略代理与DNS解析.md) · [37 多数据库与安装引导](docs/37-多数据库支持与安装引导.md) |
 | 安全 | [28 安全与密钥管理](docs/28-安全与密钥管理.md) |
 
 ---
@@ -333,11 +391,27 @@ A：两条路。一是配置代理（全局或单源）；二是把「DNS 解析
 curl "http://127.0.0.1:8000/api/v1/system/dns/diagnose?host=api.binance.com"
 ```
 
-**Q：能改用 PostgreSQL 吗？**
-A：可以。改 `DATABASE_URL` 为 `postgresql+psycopg://...` 即可，生产环境建议叠加 TimescaleDB。
+**Q：能改用 PostgreSQL / MySQL 吗？多台设备怎么共享同一份数据？**
+A：可以，首启引导页里直接选。把数据库放在一台所有设备都能访问的内网机器上，各设备都指向同一个库即可保持一致：
+
+```bash
+# 服务端机器上（PostgreSQL 为例）
+createdb btc
+# 各设备首启引导页选 PostgreSQL，填主机/端口/库名/账号/口令 → 测试连接 → 保存
+# 或者命令行先验证一次
+python scripts/btcctl.py db-test --url "postgresql+asyncpg://btc:口令@10.0.0.5:5432/btc"
+```
+
+生产环境建议 PostgreSQL 叠加 TimescaleDB。**注意别填同步驱动**（`postgresql+psycopg://`、`mysql+pymysql://`）—— 平台会自动纠正为异步驱动，但最好一开始就填对。
+
+**Q：想换数据库了怎么办？**
+A：`python scripts/btcctl.py setup-reset` 把系统改回未安装状态，下次打开网页会重新进入引导页。这个操作只改标记，**不删任何数据**，旧库文件原样保留，随时可切回。
+
+**Q：代理「测试连通性」到底是谁在发请求？**
+A：是**服务端**在发。响应里会回显发起方的主机名、进程 PID 与内网 IP，可以和你的浏览器所在机器对比确认。你浏览器自己挂的代理不会影响这个结果。
 
 **Q：数据会丢吗？**
-A：`btcctl backup` 支持数据库与配置备份，`restore` 恢复。历史数据落地在本地 SQLite，不依赖任何第三方服务存活。
+A：`btcctl backup` 支持数据库与配置备份，`restore` 恢复。历史数据落在你自己的库里（SQLite 文件或自建的 PG/MySQL），不依赖任何第三方服务存活。
 
 ---
 

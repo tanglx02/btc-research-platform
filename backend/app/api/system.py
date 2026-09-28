@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import os
 import platform
+import socket
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 
 from ..core.config import get_settings
 from ..core.errors import NotFoundError, ValidationError
@@ -55,11 +57,28 @@ async def ready() -> dict[str, Any]:
 
 @router.get("/info", summary="系统信息（不含任何密钥）")
 async def info() -> dict[str, Any]:
+    from ..db.base import current_dialect
+    from ..db.dialects import mask_url
+    from ..db.base import normalize_url
+
+    dialect = current_dialect(settings)
+    try:
+        masked = mask_url(normalize_url(settings.DATABASE_URL, settings))
+    except Exception:  # noqa: BLE001 - 连接串残缺时也要能返回系统信息
+        masked = "(无法解析)"
     return {
         "app": settings.APP_NAME,
         "env": settings.APP_ENV,
         "timezone": settings.TIMEZONE,
-        "database_type": "sqlite" if settings.DATABASE_URL.startswith("sqlite") else "postgresql",
+        "database_type": dialect,
+        "database_label": {"sqlite": "SQLite", "postgresql": "PostgreSQL",
+                           "mysql": "MySQL / MariaDB"}.get(dialect, dialect),
+        "database_url_masked": masked,
+        "database_scope": (
+            "单机：数据保存在本机文件里，其它机器看不到"
+            if dialect == "sqlite" else
+            "共享：多台设备连同一个库，数据始终一致"
+        ),
         "cache": "redis" if settings.REDIS_URL else "memory",
         "ai_assistant_enabled": settings.AI_ASSISTANT_ENABLED
         and bool(settings.OPENAI_API_KEY),
@@ -209,12 +228,29 @@ async def current_proxy() -> dict[str, Any]:
     return info
 
 
-@router.post("/proxy/test", summary="测试代理连通性（管理接口）")
-async def test_proxy(payload: dict[str, Any] | None = None, _admin: AdminDep = None) -> dict[str, Any]:
-    """拿一个代理地址，去真实请求几个数据源，逐个回报结果。
+@router.post("/proxy/test", summary="测试代理连通性（由服务端发起）")
+async def test_proxy(
+    payload: dict[str, Any] | None = None,
+    request: Request = None,
+    _admin: AdminDep = None,
+) -> dict[str, Any]:
+    """拿一个代理地址，由**服务端**真实去请求几个数据源，逐个回报结果。
 
     目的很直接：配置代理这种事，不实际连一下谁也不知道配没配对。
     支持 `proxy_url` 省略时不带代理直连（用来对照「配之前」的基线）。
+
+    「谁发起的」这件事必须说清楚
+    --------------------------
+    这个测试曾经让人误以为是用浏览器测的 —— 界面上看不出区别，而用户自己的浏览器
+    往往挂着系统代理，于是「浏览器能开、后台测不通」就成了悬案。
+
+    所以响应里显式带上三方坐标：
+
+    * `initiator`：服务端进程自己的身份（主机名 / Python 版本 / 进程号）
+    * `requester`：谁点的这个按钮（服务端眼里的客户端 IP / UA）
+    * 探测结果里的「出口 IP」：服务端实际访问公网时用的地址
+
+    三条对不上（比如出口 IP 和浏览器 IP 一模一样）就说明代理没生效，一目了然。
     """
     import time
 
@@ -273,21 +309,58 @@ async def test_proxy(payload: dict[str, Any] | None = None, _admin: AdminDep = N
 
     saved_as = None
     if save and url:
-        key = "SOCKS_PROXY" if url.startswith(("socks",)) else "HTTPS_PROXY"
+        # 按代理类型存进对应的全局项：HTTP 代理存 HTTP_PROXY、SOCKS5 存 SOCKS_PROXY。
+        # 全塞进 HTTPS_PROXY 的话，「只对 HTTP 生效」这类配置就看不出来了。
+        scheme = url.split("://", 1)[0].lower()
+        key = {
+            "socks5": "SOCKS_PROXY", "socks4": "SOCKS_PROXY",
+            "https": "HTTPS_PROXY", "http": "HTTP_PROXY",
+        }.get(scheme, "HTTPS_PROXY")
         await get_settings_store().load()
         await get_settings_store().set_many({key: url}, updated_by="admin")
         saved_as = key
 
+    initiator = {
+        # 这三件套就是「到底是谁发的请求」的答案：它肯定不是浏览器
+        "role": "server",
+        "role_cn": "服务端（本机运行平台的 Python 进程）",
+        "hostname": socket.gethostname(),
+        "python": platform.python_version(),
+        "pid": os.getpid(),
+        # 服务端自己解析本机 IP，用来和下面的出口 IP 对比
+        "local_ip": _local_ip(),
+    }
+    if request is not None:
+        initiator.update(
+            {
+                "requester_ip": request.client.host if request.client else None,
+                "requester_ua": (request.headers.get("user-agent") or "")[:120],
+            }
+        )
+
     ok_count = sum(1 for r in results if r["ok"])
     return {
         "proxy": describe_proxy(url) if url else {"set": False},
-        "mode": "使用指定代理" if url else "直连（对照基线）",
+        "mode": "服务端使用指定代理" if url else "服务端直连（对照基线）",
+        "initiator": initiator,
         "saved_as": saved_as,
         "targets_total": len(results),
         "targets_ok": ok_count,
         "results": results,
         "hint": None if ok_count else "全部失败：先看「出口 IP」那一项，若它也失败，说明代理本身就没连通。",
     }
+
+
+def _local_ip() -> str:
+    """拿本机在局域网里的地址（解析不出就退回 127.0.0.1）。"""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("223.5.5.5", 80))  # 不发包，只为让内核挑一张出口网卡
+        return sock.getsockname()[0]
+    except Exception:  # noqa: BLE001
+        return "127.0.0.1"
+    finally:
+        sock.close()
 
 
 @router.get("/dns/diagnose", summary="检测 DNS 是否被污染")

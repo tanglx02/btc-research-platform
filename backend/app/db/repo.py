@@ -10,25 +10,15 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 
 from sqlalchemy import delete, func, select
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.logging import get_logger
 from .models import Candle, MarketPrice, RawMarketData
+from .upsert import upsert_for_session
 
 logger = get_logger(__name__)
 
 CHUNK = 500
-
-
-def dialect_insert(session: AsyncSession, model: Any):
-    """按当前数据库方言返回对应的 INSERT 构造器（SQLite / PostgreSQL 均可 upsert）。"""
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-    bind = session.get_bind()
-    if bind is not None and bind.dialect.name == "postgresql":
-        return pg_insert(model)
-    return sqlite_insert(model)
 
 
 async def upsert_candles(session: AsyncSession, rows: Sequence[dict[str, Any]]) -> int:
@@ -46,10 +36,9 @@ async def upsert_candles(session: AsyncSession, rows: Sequence[dict[str, Any]]) 
     }
     for i in range(0, len(rows), CHUNK):
         chunk = rows[i : i + CHUNK]
-        stmt = dialect_insert(session, Candle).values(chunk)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["symbol", "interval", "ts", "source_id"],
-            set_={name: getattr(stmt.excluded, name) for name in update_cols},
+        stmt = upsert_for_session(
+            session, Candle, chunk,
+            ["symbol", "interval", "ts", "source_id"], update_cols,
         )
         await session.execute(stmt)
         written += len(chunk)
@@ -100,15 +89,7 @@ async def upsert_rows(
                          columns=",".join(sorted(dropped_cols)[:20]))
         if not clean_rows or not clean_rows[0]:
             continue
-        stmt = dialect_insert(session, model).values(clean_rows)
-        if not updatable:
-            # 没有可更新列时退化为「冲突即忽略」，同样保证幂等
-            stmt = stmt.on_conflict_do_nothing(index_elements=conflict)
-        else:
-            stmt = stmt.on_conflict_do_update(
-                index_elements=conflict,
-                set_={name: getattr(stmt.excluded, name) for name in updatable},
-            )
+        stmt = upsert_for_session(session, model, clean_rows, conflict, updatable)
         await session.execute(stmt)
         written += len(clean_rows)
     await session.commit()
@@ -149,17 +130,11 @@ async def insert_raw(
 
 
 async def upsert_market_price(session: AsyncSession, row: dict[str, Any]) -> None:
-    stmt = dialect_insert(session, MarketPrice).values(row)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["symbol", "source_id", "observation_time"],
-        set_={
-            "price": stmt.excluded.price,
-            "fetch_time": stmt.excluded.fetch_time,
-            "updated_at": stmt.excluded.updated_at,
-            "quality_status": stmt.excluded.quality_status,
-            "cross_validation": stmt.excluded.cross_validation,
-            "confidence": stmt.excluded.confidence,
-        },
+    stmt = upsert_for_session(
+        session, MarketPrice, [row],
+        ["symbol", "source_id", "observation_time"],
+        ["price", "fetch_time", "updated_at", "quality_status",
+         "cross_validation", "confidence"],
     )
     await session.execute(stmt)
     await session.commit()

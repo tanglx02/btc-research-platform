@@ -48,10 +48,15 @@ def _strip_comments(text: str) -> str:
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
     return re.sub(r"(?<!:)//[^\n]*", "", text)
 
+# 第二个参数的合法起点：对象/数组字面量、变量名、或函数调用的返回值
+_SECOND_ARG_OK = re.compile(r"^(\{|\[|[A-Za-z_$])")
+
 # 这些路径的写接口必须有请求体，空手调用等于什么都没传
 _BODY_REQUIRED_PATHS = {
     "/system/backfill": "回填：interval / start_date / end_date 必须放在请求体里",
     "/system/proxy/test": "代理测试：proxy_url 必须放在请求体里",
+    "/system/setup/test": "安装引导自检：连接参数必须放在请求体里",
+    "/system/setup/complete": "安装引导完成：连接参数必须放在请求体里",
     "/assistant/ask": "问答助手：question 必须放在请求体里",
 }
 
@@ -88,7 +93,11 @@ def test_body_required_endpoints_send_an_object(path) -> None:
             f"{path.name} 里 POST {api_path} 没有传任何参数：{hint}"
         )
         second = text[m.end(): m.end() + 400].lstrip()
-        assert second and second[0] in "{[a-zA-Z_$", (
+        # 允许三种形态：对象/数组字面量、变量名、函数调用的返回值。
+        # 早前这里写成 `second[0] in "{[a-zA-Z_$"`，那是**字符串包含**而不是字符类匹配 ——
+        # 只有恰好以 a / z / A / Z / { / [ / _ / $ 开头的写法才过得去，
+        # 像 post(p, payload()) 这种完全正常的调用会被误判成缺请求体。
+        assert second and _SECOND_ARG_OK.match(second), (
             f"{path.name} 里 POST {api_path} 缺少请求体：{hint}"
         )
         assert not second.startswith(("null", "undefined")), (
@@ -116,3 +125,46 @@ def test_unwrap_reads_fastapi_detail() -> None:
     assert "detail" in core, (
         "unwrap() 应同时解析 {error:{message}} 与 FastAPI 标准的 {detail:[...]}"
     )
+
+
+# ============================================================ 安装引导 / 代理 UI
+
+
+def test_setup_wizard_is_wired_into_boot_and_routing() -> None:
+    """引导页必须在 index.html 里被加载、在 app.js 里被路由，否则永远走不到。"""
+    idx = (REPO_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    assert "pages-setup.js" in idx, "index.html 没有加载 pages-setup.js"
+
+    app = (JS_ROOT / "app.js").read_text(encoding="utf-8")
+    assert "checkSetupState" in app, "app.js 启动时必须先查一次安装状态"
+    assert "window.PSU" in app, "路由表里要把引导页模块也纳入候选（window.PSU）"
+    assert "setup-mode" in app, "未安装时应给 body 加 setup-mode，隐藏导航与顶栏状态"
+
+
+def test_setup_wizard_page_contract() -> None:
+    """引导页自身的几条硬约束：三种数据库可选、没测通不能点保存。"""
+    page = (JS_ROOT / "pages-setup.js").read_text(encoding="utf-8")
+    assert _strip_comments(page)  # 能读到的前提下再谈内容
+    for token in ("sqlite", "postgresql", "mysql"):
+        assert token in page, f"引导页必须提供 {token} 选项"
+    assert "saveBtn.disabled = true" in page, "初始状态必须禁用「保存并完成」"
+    assert "lastOk" in page, "保存按钮只能由自检结果解锁"
+    assert "/system/setup/test" in page and "/system/setup/complete" in page
+
+
+def test_proxy_ui_has_scheme_selector_and_per_scheme_fields() -> None:
+    """代理设置要像浏览器一样：先选协议，再填主机/端口/账号/密码。"""
+    page = _strip_comments((JS_ROOT / "pages-system.js").read_text(encoding="utf-8"))
+    for token in ("px-scheme", "px-host", "px-port", "px-user", "px-pass"):
+        assert token in page, f"代理区缺少 {token} 输入框"
+    for scheme in ("socks5", "http", "https"):
+        assert scheme in page, f"代理类型下拉要有 {scheme}"
+    # 用户名/密码必须编码，否则带特殊字符的口令会被当成主机分隔符
+    assert "encodeURIComponent" in page, "拼接代理地址时必须对用户名/密码做 URL 编码"
+
+
+def test_proxy_result_shows_who_initiated_the_test() -> None:
+    """「到底是谁发起的测试」必须在界面上说清楚，这是这个页面最大的误会来源。"""
+    page = _strip_comments((JS_ROOT / "pages-system.js").read_text(encoding="utf-8"))
+    assert "initiator" in page, "结果区应展示服务端身份（initiator）"
+    assert "服务端" in page

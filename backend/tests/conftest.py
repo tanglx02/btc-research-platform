@@ -30,6 +30,10 @@ for p in (str(ROOT), str(BACKEND), str(ROOT / "scripts")):
 # 必须在 import app.* 之前设置，避免加载到真实数据库
 os.environ["APP_ENV"] = "test"
 os.environ["SCHEDULER_ENABLED"] = "false"
+# 未完成「首次启动安装向导」时，/api/v1/** 会被 503 闸门统一挡下。
+# 测试必须显式声明「已安装」，否则整套 API 契约用例拿到的都是 setup_required，
+# 而这个报错跟被测接口毫无关系，排查时会浪费很多时间。
+os.environ["SETUP_COMPLETED"] = "true"
 os.environ.setdefault("LOG_LEVEL", "WARNING")
 
 _TMP_DB_DIR = Path(os.environ.get("BTC_TEST_TMP", str(ROOT / "data" / "_test_tmp")))

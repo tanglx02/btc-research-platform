@@ -61,6 +61,8 @@
   NAV.forEach(([group, items]) => items.forEach(([path, title, fn]) => {
     ROUTES[path] = { title, fn, group };
   }));
+  // 安装引导不进导航菜单：它只在「还没安装」时出现，装完了就再也不该看到入口。
+  ROUTES['/setup'] = { title: '安装引导', fn: 'setupWizard', group: null };
 
   function current() {
     const raw = (location.hash || '#/').replace(/^#/, '');
@@ -70,6 +72,13 @@
 
   function renderNav(activePath) {
     const el = document.getElementById('sidebar');
+    if (needsSetupGate) {
+      // 没装好就别给导航了 —— 点了也是 503，只会让人以为平台坏了
+      el.innerHTML = `<div class="nav-group"><div class="nav-group-title">等待安装</div>
+        <div style="padding:4px 10px;font-size:12px;color:var(--muted)">
+          完成数据库配置后自动解锁全部功能</div></div>`;
+      return;
+    }
     el.innerHTML = NAV.map(([group, items]) => `
       <div class="nav-group">
         <div class="nav-group-title">${group}</div>
@@ -79,9 +88,29 @@
   }
 
   let currentRender = null;
+  let needsSetupGate = false;
+
+  /** 查询服务端「装没装」。查不到时按已安装处理 —— 宁可放行也别把人锁在门外。 */
+  async function checkSetupState() {
+    try {
+      const s = await C.get('/system/setup/status');
+      needsSetupGate = !!(s && s.needs_setup);
+    } catch (_) {
+      needsSetupGate = false;
+    }
+    document.body.classList.toggle('setup-mode', needsSetupGate);
+    return needsSetupGate;
+  }
 
   async function route() {
     const { path, params } = current();
+
+    // 未安装时锁死到引导页：否则用户会在一个没库的系统里点来点去，
+    // 每个页面都报 503，而真因（数据库没配）被埋在看不见的报错里。
+    if (needsSetupGate && path !== '/setup') {
+      location.hash = '#/setup';
+      return;
+    }
     const r = ROUTES[path];
     const content = document.getElementById('content');
     if (!r) {
@@ -97,7 +126,7 @@
     const modules = [
       window.PM && window.PM[r.fn], window.PA && window.PA[r.fn],
       window.PR && window.PR[r.fn], window.PP && window.PP[r.fn], window.PS && window.PS[r.fn],
-      window.PA_ALERTS && window.PA_ALERTS[r.fn]
+      window.PA_ALERTS && window.PA_ALERTS[r.fn], window.PSU && window.PSU[r.fn]
     ].filter(Boolean);
     const render = modules[0];
 
@@ -162,9 +191,16 @@
       document.getElementById('btn-refresh').onclick = () => App.reload();
       document.getElementById('footer-info').textContent =
         `共 ${Object.keys(ROUTES).length} 个页面 · 数据源与应用解耦`;
-      route();
-      refreshTopbar();
-      setInterval(refreshTopbar, 60000);
+      checkSetupState().then(gated => {
+        if (gated) {
+          location.hash = '#/setup';
+          route();
+          return;
+        }
+        route();
+        refreshTopbar();
+        setInterval(refreshTopbar, 60000);
+      });
     }
   };
 

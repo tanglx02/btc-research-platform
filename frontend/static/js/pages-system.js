@@ -183,21 +183,65 @@
     let cur = { configured: false };
     try { cur = await get('/system/proxy'); } catch (e) { cur = { configured: false }; }
 
-    html += `<div class="card"><h3 class="card-title">网络代理 <span class="hint">Binance / Coinbase / Kraken / CoinGecko 等在国内直连会失败，配了代理才能取到</span></h3>
+    html += `<div class="card"><h3 class="card-title">网络代理
+      <span class="hint">Binance / Coinbase / Kraken / CoinGecko 等在国内直连会失败，配了代理才能取到</span></h3>
       <div class="muted" style="margin-bottom:8px">当前生效：${
         cur.invalid ? `<span class="badge b-bad">地址有误：${esc(cur.error || '')}</span>`
           : cur.configured ? `<code>${esc(cur.masked || '')}</code> <span class="badge b-ok">已生效</span>`
           : '<span class="badge b-mute">未配置（直连）</span>'}</div>
+
+      <div class="note note-info" style="margin-bottom:10px">
+        <b>测试由服务端发起，与你的浏览器无关。</b>
+        浏览器常挂着系统代理（科学上网工具 / 公司代理），如果用浏览器测，
+        结果会被它带偏 —— 本平台采集数据是后台进程在跑，要看的就是那个进程的连通情况。
+        测完下面会显示服务端的进程信息与实际出口 IP。
+      </div>
+
+      <div class="form-row">
+        <label>代理类型</label>
+        <select class="inp" id="px-scheme" style="max-width:220px">
+          ${[['socks5', 'SOCKS5（推荐）'], ['http', 'HTTP'], ['https', 'HTTPS'], ['socks4', 'SOCKS4']]
+        .map(([v, t]) => `<option value="${v}"${(cur.scheme || 'socks5') === v ? ' selected' : ''}>${t}</option>`).join('')}
+        </select>
+        <span class="muted" style="font-size:11px">跟浏览器里填代理是一样的几项，只是这里配给后台进程用</span>
+      </div>
+      <div class="form-row">
+        <label>主机</label>
+        <input class="inp" id="px-host" placeholder="127.0.0.1" style="min-width:200px" autocomplete="off" value="${esc(cur.host || '')}">
+        <label style="min-width:auto">端口</label>
+        <input class="inp" id="px-port" placeholder="1080" style="max-width:110px" autocomplete="off" value="${cur.port ? esc(String(cur.port)) : ''}">
+      </div>
+      <div class="form-row">
+        <label>用户名</label>
+        <input class="inp" id="px-user" placeholder="可留空" style="min-width:180px" autocomplete="off" value="${esc(cur.username || '')}">
+        <label style="min-width:auto">密码</label>
+        <input class="inp" id="px-pass" type="password" placeholder="${cur.has_password ? '已保存（不显示）' : '可留空'}" autocomplete="new-password">
+      </div>
+
+      <div class="form-row" style="margin-bottom:6px">
+        <label>拼出的地址</label>
+        <div style="flex:1"><code id="px-preview" class="mono muted">（请填写上面几项）</code></div>
+      </div>
+
+      <details class="raw" style="margin:0 0 10px">
+        <summary>高级：直接粘贴完整代理地址</summary>
+        <div style="padding-top:8px">
+          <input class="inp" id="px-url" placeholder="socks5://用户名:密码@IP:端口" style="min-width:320px">
+          <div class="muted" style="font-size:11px;margin-top:4px">
+            填了就以它为准（上面的格子会被忽略）。随意写法都认：
+            <code>socks5h://...</code>、<code>proxy:user@1.2.3.4:1080</code>、<code>user@1.2.3.4:1080</code>。
+          </div>
+        </div>
+      </details>
+
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <input class="inp" id="px-url" placeholder="socks5://用户名:密码@IP:端口" style="min-width:320px">
-        <button class="btn btn-primary" id="px-test">测试代理连通性</button>
+        <button class="btn btn-primary" id="px-test">测试代理连通性（服务端发起）</button>
         <button class="btn" id="px-direct">直连对照测试</button>
         <button class="btn" id="px-save">保存为全局代理</button>
       </div>
       <div class="muted" style="font-size:11px;margin-top:6px">
-        写法很随意都认：<code>socks5://user:pass@1.2.3.4:1080</code>、
-        <code>socks5h://...</code>、<code>proxy:user@1.2.3.4:1080</code>、
-        <code>user@1.2.3.4:1080</code>。保存后<b>下一次请求即生效，不用重启</b>。
+        保存后<b>下一次请求即生效，不用重启</b>；HTTP 代理存进 HTTP_PROXY、
+        SOCKS5 存进 SOCKS_PROXY，互不覆盖。
       </div>
       <div id="px-result"></div></div>`;
 
@@ -263,13 +307,56 @@
       };
       paintToken();
 
-      // ---------------- 代理连通性测试 ----------------
+      // ---------------- 代理连通性测试（由服务端发起） ----------------
       const pxOut = document.getElementById('px-result');
       const pxUrl = document.getElementById('px-url');
+      const pxScheme = document.getElementById('px-scheme');
+      const pxHost = document.getElementById('px-host');
+      const pxPort = document.getElementById('px-port');
+      const pxUser = document.getElementById('px-user');
+      const pxPass = document.getElementById('px-pass');
+      const pxPreview = document.getElementById('px-preview');
+
+      // 从「类型 + 主机 + 端口 + 用户名 + 密码」拼出标准代理地址。
+      // 用户名/密码必须 encodeURIComponent：随机生成的口令十个里九个带 @ 或 #，
+      // 不编码会被当成主机分隔符，报的错跟密码半点关系都没有。
+      const composeProxy = () => {
+        const host = (pxHost.value || '').trim();
+        if (!host) return '';
+        const scheme = pxScheme.value || 'socks5';
+        const port = (pxPort.value || '').trim() || (scheme.startsWith('socks') ? '1080' : '8080');
+        const user = encodeURIComponent((pxUser.value || '').trim());
+        const pass = encodeURIComponent((pxPass.value || '').trim());
+        const cred = user ? (pass ? `${user}:${pass}@` : `${user}@`) : '';
+        return `${scheme}://${cred}${host}:${port}`;
+      };
+      const currentProxyUrl = () => ((pxUrl.value || '').trim()) || composeProxy();
+      const paintPreview = () => {
+        const u = currentProxyUrl();
+        pxPreview.textContent = u ? u.replace(/\/\/[^/@]*@/, '//***@') : '（请填写上面几项）';
+      };
+      [pxScheme, pxHost, pxPort, pxUser, pxPass, pxUrl].forEach(el => {
+        el.addEventListener('input', paintPreview);
+        el.addEventListener('change', paintPreview);
+      });
+      paintPreview();
+
+      const initiatorBlock = (r) => {
+        const i = r.initiator;
+        if (!i) return '';
+        return note('info',
+          `<b>本次测试的发起方：${esc(i.role_cn || '服务端进程')}</b><br>
+           主机名 <code>${esc(i.hostname || '—')}</code> ·
+           局域网 IP <code>${esc(i.local_ip || '—')}</code> ·
+           Python ${esc(i.python || '—')} · 进程号 ${esc(String(i.pid || '—'))}
+           ${i.requester_ip ? `<br>点这个按钮的客户端 IP：<code>${esc(i.requester_ip)}</code>` : ''}
+           <br><span class="muted">探测用的是服务端进程自己的 httpx 连接池，
+             浏览器有没有挂系统代理、能不能翻墙，都不参与这个过程。</span>`);
+      };
       const egressText = (r) => {
         const hit = (r.results || []).find(x => x.key === 'egress_ip' && x.ok && x.preview);
         if (!hit) return '';
-        try { return `，当前出口 IP：<b>${esc(String(JSON.parse(hit.preview).ip || '?'))}</b>`; } catch (_) { return ''; }
+        try { return `，服务端当前出口 IP：<b>${esc(String(JSON.parse(hit.preview).ip || '?'))}</b>`; } catch (_) { return ''; }
       };
       const renderProxyResult = (r) => {
         const rows = (r.results || []).map(x => [
@@ -280,15 +367,17 @@
             : `<span class="muted">${esc(x.failure_type || '')} ${esc(String(x.message || '').slice(0, 90))}</span>`
         ]);
         pxOut.innerHTML =
+          initiatorBlock(r) +
           `<div style="margin-top:10px">${note(r.targets_ok ? 'ok' : 'bad',
             `${esc(r.mode)}：${r.targets_ok}/${r.targets_total} 个目标可达${egressText(r)}`)}</div>` +
           table(['探测目标', '结果', '耗时', '说明 / 错误'], rows) +
           (r.hint ? note('warn', esc(r.hint)) : '');
       };
       const runProxyTest = async (save) => {
-        pxOut.innerHTML = `<div class="loading"><span class="spin"></span> 正在逐项探测…</div>`;
+        const url = currentProxyUrl();
+        pxOut.innerHTML = `<div class="loading"><span class="spin"></span> 服务端正在逐项探测…</div>`;
         try {
-          const r = await post('/system/proxy/test', { proxy_url: pxUrl.value.trim(), save: !!save });
+          const r = await post('/system/proxy/test', { proxy_url: url, save: !!save });
           renderProxyResult(r);
           if (save && r.saved_as) { toast('已保存为全局代理：' + r.saved_as); setTimeout(() => location.reload(), 900); }
         } catch (e) { pxOut.innerHTML = unavailable(String(e.message || e)); }
@@ -298,8 +387,11 @@
       bind('px-save', () => runProxyTest(true));
       bind('px-direct', async () => {
         const keep = pxUrl.value; pxUrl.value = '';
+        const keepParts = [pxHost.value, pxPort.value, pxUser.value, pxPass.value];
+        pxHost.value = pxPort.value = pxUser.value = pxPass.value = '';
         await runProxyTest(false);
         pxUrl.value = keep;
+        [pxHost.value, pxPort.value, pxUser.value, pxPass.value] = keepParts;
       });
 
       // ---------------- DNS 污染检测 ----------------
